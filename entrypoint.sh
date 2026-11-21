@@ -15,13 +15,28 @@ LOGO
 print_boot
 
 # Resolve proxy URL (never embed secrets in the image).
+# PROXY_URLS (comma list) + PROXY_MODE round-robin|sticky + PROXY_PICK N
+# select the pool; Lightpanda gets one URL per run (rotation across runs).
 PX=""
-if [ -n "$WEBSHARE_TOKEN" ] && [ -x /usr/bin/resolve-proxy ]; then
+if [ -n "$PROXY_URLS" ]; then
+  LIST="$PROXY_URLS"
+  if [ "${PROXY_PICK:-0}" -gt 0 ] 2>/dev/null; then
+    LIST=$(printf '%s' "$PROXY_URLS" | cut -d, -f1-"${PROXY_PICK}")
+  fi
+  if [ "${PROXY_MODE:-round-robin}" = "sticky" ]; then
+    PX=$(printf '%s' "$LIST" | cut -d, -f1)
+  else
+    N=$(printf '%s' "$LIST" | tr ',' '\n' | grep -c .)
+    IDX=$(( ( $(date +%s) % N ) + 1 ))
+    PX=$(printf '%s' "$LIST" | cut -d, -f"$IDX")
+  fi
+elif [ -n "$WEBSHARE_TOKEN" ] && [ -x /usr/bin/resolve-proxy ]; then
   PX=$(/usr/bin/resolve-proxy 2>/dev/null || true)
 elif [ -n "$PROXY_USERNAME" ] && [ "$PROXY_USERNAME" != "USERNAME" ] && \
      [ -n "$PROXY_PASSWORD" ] && [ "$PROXY_PASSWORD" != "PASSWORD" ]; then
   PX="http://${PROXY_USERNAME}:${PROXY_PASSWORD}@${PROXY_HOST:-isp.decodo.com}:${PROXY_PORT:-10000}"
 fi
+if [ -n "$PX" ]; then export HTTP_PROXY="$PX" HTTPS_PROXY="$PX"; fi
 
 # Bright Data CDP (secret-injected at runtime, not built in).
 if [ -n "$BRIGHTDATA_CDP_URL" ]; then
