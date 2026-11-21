@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type TUI struct {
 	fbuf     string
 	quit     chan struct{}
 	onQuit   func()
+	offset   int // scrollback from live tail (j/k)
 }
 
 func colorOK() bool {
@@ -139,10 +141,42 @@ func (t *TUI) input(fd int) {
 			t.sortDesc = !t.sortDesc
 		case '1', '2', '3', '4':
 			t.sortCol = int(c - '1')
+		case 'j', 'J':
+			t.offset++
+		case 'k', 'K':
+			if t.offset > 0 {
+				t.offset--
+			}
+		case 'p', 'P':
+			t.m.TogglePause()
+			t.offset = 0
+		case 'g', 'G':
+			_ = t.m.DumpSeries("/tmp/skrapy-spark.tsv")
+		case 'b', 'B':
+			t.launchBtop(fd)
 		case 27:
 			t.help = false
 		}
 	}
+}
+
+// launchBtop suspends the alt-screen, runs btop/htop on the TTY, then resumes.
+func (t *TUI) launchBtop(fd int) {
+	term.Restore(fd, t.oldState)
+	fmt.Fprint(t.out, "\033[?1049l")
+	cmd := exec.Command("btop")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, t.out, t.out
+	if err := cmd.Run(); err != nil {
+		cmd = exec.Command("htop")
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, t.out, t.out
+		_ = cmd.Run()
+	}
+	old, err := term.MakeRaw(fd)
+	if err == nil {
+		t.oldState = old
+	}
+	fmt.Fprint(t.out, "\033[?1049h\033[H")
+	t.render()
 }
 
 func (t *TUI) rows() []Row {
@@ -180,11 +214,15 @@ func (t *TUI) rows() []Row {
 }
 
 func (t *TUI) render() {
+	fmt.Fprintf(t.out, "\033[H%s", t.frame())
+}
+
+// frame builds the dashboard string (testable without a TTY).
+func (t *TUI) frame() string {
 	t.size()
 	w, h := t.w, t.h
 	if w < 80 || h < 24 {
-		fmt.Fprintf(t.out, "\033[H\033[2Jterminal too small (%dx%d), need 80x24", w, h)
-		return
+		return fmt.Sprintf("terminal too small (%dx%d), need 80x24", w, h)
 	}
 	var b strings.Builder
 	bar := strings.Repeat("═", w-2)
@@ -202,10 +240,14 @@ func (t *TUI) render() {
 	}
 	b.WriteString("║" + padRight(sp, w-2) + "║\n")
 	b.WriteString("╠" + bar + "╣\n")
+	stLine, s3Line := storageLines(s, w-2)
+	b.WriteString("║" + padRight(stLine, w-2) + "║\n")
+	b.WriteString("║" + padRight(s3Line, w-2) + "║\n")
+	b.WriteString("╠" + bar + "╣\n")
 
 	rows := t.rows()
-	// header + cards(2) + table header + footer + borders
-	avail := h - 7
+	// header + cards(2) + storage/s3(2) + table header + footer + borders
+	avail := h - 9
 	if t.help {
 		avail -= 8
 	}
@@ -220,12 +262,19 @@ func (t *TUI) render() {
 		head = head[:w-2]
 	}
 	b.WriteString("║" + padRight(head, w-2) + "║\n")
+	if t.offset > len(rows) {
+		t.offset = len(rows)
+	}
 	start := 0
 	if len(rows) > avail {
-		start = len(rows) - avail
+		start = len(rows) - avail - t.offset
+		if start < 0 {
+			t.offset = len(rows) - avail
+			start = 0
+		}
 	}
 	for _, r := range rows[start:] {
-		g := glyph(r.Status)
+		g := statusGlyph(r.Status)
 		line := fmt.Sprintf(" %-40.40s │ %-4s │ %8d │ %.30s", r.URL, g, r.MS, r.Title)
 		if len(line) > w-2 {
 			line = line[:w-2]
@@ -236,7 +285,11 @@ func (t *TUI) render() {
 		b.WriteString("║" + strings.Repeat(" ", w-2) + "║\n")
 	}
 	b.WriteString("╠" + bar + "╣\n")
-	foot := " ? Help  r Refresh  / Filter  s Sort  q Quit"
+	paused := ""
+	if s.Paused {
+		paused = theme(" ⏸ PAUSED", Fuchsia)
+	}
+	foot := " ? Help  r Refresh  / Filter  s Sort  p Pause  b btop  g series  q Quit" + paused
 	if t.entering {
 		foot = " / Filter: " + t.fbuf + "█  (Enter applies, Esc cancels)"
 	} else if t.filter != "" {
@@ -250,24 +303,44 @@ func (t *TUI) render() {
 	if t.help {
 		b.WriteString("\n" + helpBox(w))
 	}
-	fmt.Fprintf(t.out, "\033[H%s", b.String())
+	return b.String()
 }
 
-func glyph(status string) string {
-	switch status {
-	case "ok":
-		return "◉ OK"
-	case "slow":
-		return "⚠ SL"
+// storageLines renders run-storage and S3 upload progress (zero-dep █ bars).
+func storageLines(s Snapshot, _ int) (string, string) {
+	var stPct float64
+	if s.StorageCap > 0 {
+		stPct = float64(s.StorageUsed) / float64(s.StorageCap) * 100
+	}
+	st := fmt.Sprintf("%s %s/%s", "Storage",
+		humanBytes(s.StorageUsed), humanBytes(s.StorageCap))
+	st += " " + Bar("", stPct, 20)
+	tool := s.S3Tool
+	if tool == "" {
+		tool = "s3"
+	}
+	s3 := fmt.Sprintf("%s [%s] %s", "S3", tool, Bar("", s.S3Pct, 20))
+	return st, s3
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1024*1024*1024:
+		return fmt.Sprintf("%.1fG", float64(n)/1024/1024/1024)
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.0fM", float64(n)/1024/1024)
+	case n >= 1024:
+		return fmt.Sprintf("%.0fK", float64(n)/1024)
 	default:
-		return "✖ ER"
+		return fmt.Sprintf("%dB", n)
 	}
 }
 
 func helpBox(w int) string {
 	lines := []string{
 		"? toggle help   r refresh   / filter   s sort asc/desc",
-		"1-4 sort column (url status ms title)   q quit",
+		"1-4 sort column (url status ms title)   j/k scroll   p pause",
+		"b btop/htop   g dump series TSV (/tmp/skrapy-spark.tsv)   q quit",
 		"Esc closes help/filter",
 	}
 	var b strings.Builder

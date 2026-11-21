@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,10 +176,12 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 		hosts   = map[string][]string{} // host -> robots disallows
 		lastHit = map[string]time.Time{}
 		workers = cfg.concurrency
+		pages   int
 	)
 	if workers < 1 {
 		workers = 1
 	}
+	runCap := int64(envOrInt("RUN_CAP_MB", 1024)) * 1024 * 1024
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -189,6 +192,13 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 				case <-ctx.Done():
 					return
 				default:
+				}
+				for m.Paused() {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(200 * time.Millisecond):
+					}
 				}
 				mu.Lock()
 				it, ok := q.Next()
@@ -248,12 +258,46 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 				m.AddRow(metrics.Row{URL: it.URL, Status: status, MS: ms, Title: res.Title})
 				m.AddOK(int64(len(res.Text)))
 				m.Sample(1)
+				mu.Lock()
+				pages++
+				if pages%50 == 0 {
+					m.SetStorage(dirBytes(".skrapy-queue", output), runCap)
+					if runCap > 0 && dirBytes(".skrapy-queue", output) > runCap {
+						mu.Unlock()
+						log.Printf("RUN_CAP_MB reached, stopping (resume on next run)")
+						cancel()
+						return
+					}
+				}
+				mu.Unlock()
 				log.Printf("%s [%d]", res.Title, ms)
 			}
 		}()
 	}
 	wg.Wait()
 	return nil
+}
+
+// dirBytes sums the sizes of paths (queue dir + outputs) for storage bar/cap.
+func dirBytes(paths ...string) int64 {
+	var total int64
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if !fi.IsDir() {
+			total += fi.Size()
+			continue
+		}
+		_ = filepath.Walk(p, func(_ string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				total += info.Size()
+			}
+			return nil
+		})
+	}
+	return total
 }
 
 func uploadReconciled(endpoint, apiKey, path string, batchMB int64) error {
