@@ -56,6 +56,7 @@ Seed-stage crawler appliance: Lightpanda crawls a seed list, discovers links fir
 - Proxy pool: `PROXY_URLS` comma list (falls back to single `PROXY_*` set); `--proxy-mode round-robin|sticky` (default round-robin), `--proxy-pick N` limits how many pool entries are used (subset or all). Concurrent = parallel fetches multiplexed over the pool, one request per proxy at a time per slot. (my call: naming + defaults.)
 - Job model: single active job, global FIFO queue. (partner picked.)
 - Flow: pipelined — fetch continues while batch zips/uploads; on S3 OK delete local batch dir + zip. Retry 3x backoff, dead-letter to `state.json`; pause on `RUN_CAP_MB`. (partner picked delete-after-upload; pipelining + retry counts my call.)
+- Graphs / monitoring (partner 2026-11-21): TUI-native zero-dep `█` bars (40-col scaled, e.g. `printf "%-10s %3d%% %s\n"`) are the default for storage-used + S3 multipart % — no new dependency. Image also ships history plotters (`termgraph`, `uplot`/YouPlot, `gnuplot` with `set term dumb`, python `plotext`) for piped/file data (API calls, bandwidth, disk sizes), and a live monitor (`btop` primary, `htop` fallback; `glances`/`nmon` optional). Builder resolves each via Wolfi `apk` first, pip fallback second; whatever is missing becomes a documented gap, not a build break.
 
 ## Left to builder (plan-time calls)
 
