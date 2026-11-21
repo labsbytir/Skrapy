@@ -23,7 +23,14 @@ Seed-stage crawler appliance: Lightpanda crawls a seed list, discovers links fir
 
 ## Constraints
 
-- Wolfi (`https://packages.wolfi.dev/os`) + apko build; podman via `/opt/podman/bin/podman`; nonroot `65532`; MIT-licensed repo.
+- Wolfi (`https://packages.wolfi.dev/os`) + apko build; podman via `/opt/podman/bin/podman`; nonroot `65532`.
+- License: MIT, `Copyright (c) 2026 tir labs inc.` (current year). SPDX `MIT` in melange `copyright`, `LICENSE` file at repo root, apko annotations `org.opencontainers.image.licenses: MIT`, `vendor: tir labs inc.`
+- TUI theme (tir palette; terminals get 24-bit ANSI `ESC[38;2;R;G;Bm` / `48;2;...`, never raw hex in output):
+  - `--digital-blue #256EFF` (37,110,255): header, links, focus border, progress fill.
+  - `--indigo-velvet #46237A` (70,35,122): background / inactive panels.
+  - `--emerald #3DDC97` (61,220,151): success / 2xx status.
+  - `--white #FCFCFC` (252,252,252): primary text.
+  - `--hot-fuchsia #FF495C` (255,73,92): errors / 4xx-5xx, never color-only (always paired with status-code text per monospace §5/§7).
 - apko available (`~/.local/bin/apko`); melange missing locally — CI or ` следуйте GoNewsk/.github` pipeline builds.
 - Batch rule hard: max 1,000 links scraped per batch file, then compile+zip+upload before next batch starts.
 - Zip per batch: `<job>-batch-<NNNN>.zip` containing `batch-<NNNN>.jsonl`; upload via multipart (s5cmd primary, rclone fallback), progress callback → TUI.
