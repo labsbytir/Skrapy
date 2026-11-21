@@ -1,0 +1,97 @@
+package:
+  name: skrapy
+  version: 0.1.0
+  epoch: 0
+  description: "GoNewsk: headless news collector with reconcile, batch upload, and embedding-ready output"
+  copyright:
+    - license: MIT
+
+environment:
+  contents:
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    repositories:
+      - https://packages.wolfi.dev/os
+    packages:
+      - build-base
+      - go
+      - ca-certificates-bundle
+      - busybox
+      - wget
+      - nodejs-24
+      - npm
+
+subpackages:
+  - name: skrapy-embed-minilm
+    description: "GoNewsk + all-MiniLM-L6-v2 embeddings + pgvector (pglite-ready)"
+    dependencies:
+      runtime:
+        - nodejs-24
+        - npm
+    pipeline:
+      - runs: |
+          mkdir -p ${{targets.contextdir}}/opt/skrapy/embedding/all-minilm-l6-v2
+          mkdir -p ${{targets.contextdir}}/usr/bin
+          wget -q https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/model.safetensors -O ${{targets.contextdir}}/opt/skrapy/embedding/all-minilm-l6-v2/model.safetensors
+          wget -q https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json -O ${{targets.contextdir}}/opt/skrapy/embedding/all-minilm-l6-v2/config.json
+          cd ${{targets.contextdir}}/opt/skrapy/embedding/all-minilm-l6-v2 && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund @electric-sql/pglite @electric-sql/pglite-pgvector
+          cp /home/build/scripts/install-embed-minilm.sh ${{targets.contextdir}}/usr/bin/skrapy-install-embed-minilm
+          chmod +x ${{targets.contextdir}}/usr/bin/skrapy-install-embed-minilm
+
+  - name: skrapy-embed-bge
+    description: "GoNewsk + BAAI/bge-small-en-v1.5 embeddings + pgvector (pglite-ready)"
+    dependencies:
+      runtime:
+        - nodejs-24
+        - npm
+    pipeline:
+      - runs: |
+          mkdir -p ${{targets.contextdir}}/opt/skrapy/embedding/bge-small-en-v1.5
+          mkdir -p ${{targets.contextdir}}/usr/bin
+          wget -q https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/model.safetensors -O ${{targets.contextdir}}/opt/skrapy/embedding/bge-small-en-v1.5/model.safetensors
+          wget -q https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/config.json -O ${{targets.contextdir}}/opt/skrapy/embedding/bge-small-en-v1.5/config.json
+          cd ${{targets.contextdir}}/opt/skrapy/embedding/bge-small-en-v1.5 && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund @electric-sql/pglite @electric-sql/pglite-pgvector
+          cp /home/build/scripts/install-embed-bge.sh ${{targets.contextdir}}/usr/bin/skrapy-install-embed-bge
+          chmod +x ${{targets.contextdir}}/usr/bin/skrapy-install-embed-bge
+
+  - name: skrapy-embed-snowflake
+    description: "GoNewsk + Snowflake/snowflake-arctic-embed-m-v2.0 embeddings + pgvector (pglite-ready)"
+    dependencies:
+      runtime:
+        - nodejs-24
+        - npm
+    pipeline:
+      - runs: |
+          mkdir -p ${{targets.contextdir}}/opt/skrapy/embedding/snowflake-arctic-embed-m-v2.0
+          mkdir -p ${{targets.contextdir}}/usr/bin
+          wget -q https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0/resolve/main/onnx/model_quantized.onnx -O ${{targets.contextdir}}/opt/skrapy/embedding/snowflake-arctic-embed-m-v2.0/model_quantized.onnx
+          wget -q https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0/resolve/main/config.json -O ${{targets.contextdir}}/opt/skrapy/embedding/snowflake-arctic-embed-m-v2.0/config.json
+          wget -q https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0/resolve/main/tokenizer.json -O ${{targets.contextdir}}/opt/skrapy/embedding/snowflake-arctic-embed-m-v2.0/tokenizer.json
+          cd ${{targets.contextdir}}/opt/skrapy/embedding/snowflake-arctic-embed-m-v2.0 && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund @electric-sql/pglite @electric-sql/pglite-pgvector
+          cp /home/build/scripts/install-embed-snowflake.sh ${{targets.contextdir}}/usr/bin/skrapy-install-embed-snowflake
+          chmod +x ${{targets.contextdir}}/usr/bin/skrapy-install-embed-snowflake
+
+pipeline:
+  - uses: go/build
+    with:
+      packages: .
+      output: skrapy
+      ldflags: "-s -w"
+
+  - uses: go/build
+    with:
+      packages: ./cmd/resolve-proxy
+      output: resolve-proxy
+      ldflags: "-s -w"
+
+  - runs: |
+      mkdir -p ${{targets.contextdir}}/usr/bin
+      # Pinned Lightpanda release; bump alongside package.version (see update-packages.yml)
+      wget -q https://github.com/lightpanda-io/browser/releases/download/1.0.4/lightpanda-${{build.arch}}-linux -O ${{targets.contextdir}}/usr/bin/lightpanda
+      chmod +x ${{targets.contextdir}}/usr/bin/lightpanda
+      cp entrypoint.sh ${{targets.contextdir}}/usr/bin/entrypoint.sh
+      cp /home/build/scripts/first-boot.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
+      chmod +x ${{targets.contextdir}}/usr/bin/entrypoint.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
+      if [ -f resolve-proxy ]; then install -m 0755 resolve-proxy ${{targets.contextdir}}/usr/bin/resolve-proxy; fi
+
+  - uses: strip

@@ -1,0 +1,20 @@
+name = "gonewsk-verify"
+main = "src/index.ts"
+compatibility_date = "2026-11-20"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "gonewsk-data"
+
+[[queues.producers]]
+binding = "UPLOAD_QUEUE"
+queue = "gonewsk-uploads"
+
+[[queues.consumers]]
+binding = "VERIFY_QUEUE"
+queue = "gonewsk-verify"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[observability]
+enabled = true

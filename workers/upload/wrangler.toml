@@ -1,0 +1,14 @@
+name = "gonewsk-upload"
+main = "src/index.ts"
+compatibility_date = "2026-11-20"
+
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "121952d50f354c8e9df8a1fb45c855b2"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "gonewsk-data"
+
+[observability]
+enabled = true

@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v0.1.0)"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build binary
+        run: |
+          VERSION=${{ github.event.inputs.version || github.ref_name }}
+          go build -ldflags "-s -w -X main.version=$VERSION" -o gonewsk-linux-amd64 .
+          tar czf gonewsk-linux-amd64.tar.gz gonewsk-linux-amd64
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          files: |
+            gonewsk-linux-amd64
+            gonewsk-linux-amd64.tar.gz
+          generate_release_notes: true
+          body: |
+            ## Install binary (repo is private: pass a token, e.g. `gh auth token`)
+            curl -L -H "Authorization: Bearer $(gh auth token)" https://github.com/labsbytir/GoNewsk/releases/latest/download/gonewsk-linux-amd64 -o gonewsk
+            chmod +x gonewsk
+
+            ## Wolfi image
+            Built locally with melange+apko (CI runners can't run melange builds);
+            attached manually as gonewsk-image.tar. See README for the build commands.
+
+            ## Packages in this release
+            - Lightpanda: see pinned version in melange.yaml
+            - wolfi-base, ca-certificates-bundle (Wolfi)
+            - Commit: ${{ github.sha }}

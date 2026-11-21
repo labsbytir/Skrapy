@@ -1,0 +1,35 @@
+name: Build Lightpanda from source
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig 0.17.0
+        run: |
+          curl -fsSL https://ziglang.org/download/0.17.0/zig-linux-x86_64-0.17.0.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.17.0" >> $GITHUB_PATH
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils ca-certificates pkg-config libglib2.0-dev clang make curl git
+      - name: Clone Lightpanda
+        run: git clone --depth 1 https://github.com/lightpanda-io/browser.git lightpanda
+      - name: Build
+        working-directory: lightpanda
+        run: |
+          make download-v8
+          make build
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightpanda
+          path: lightpanda/zig-out/bin/lightpanda

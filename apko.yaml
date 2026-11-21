@@ -1,0 +1,35 @@
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-base
+    - ca-certificates-bundle
+    - skrapy
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+  run-as: nonroot
+
+entrypoint:
+  command: /usr/bin/entrypoint.sh
+
+environment:
+  LIGHTPANDA_CDP: "ws://127.0.0.1:9222/"
+  SOURCES_CSV: sources.csv
+  OUTPUT: results.jsonl
+  RECONCILED: reconciled.jsonl
+  BATCH_MB: "50"
+  LOOP: "0"
+  COLLECT_INTERVAL: 1h
+annotations:
+  org.opencontainers.image.title: "Newsk"
+  org.opencontainers.image.description: "Newsk OS flavor appliance - headless news collector by tir labs inc."
+  org.opencontainers.image.vendor: "tir labs inc."
+  org.opencontainers.image.url: "https://github.com/labsbytir/GoNewsk"
