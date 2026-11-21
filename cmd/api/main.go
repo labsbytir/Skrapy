@@ -11,6 +11,10 @@ func main() {
 	store := api.NewJobStore()
 	jobs := api.JobsHandler(store)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
 	mux.HandleFunc("/api/items", api.RestHandler)
 	mux.HandleFunc("/rpc", api.JSONRPCHandler)
 	mux.Handle("/api/jobs", jobs)

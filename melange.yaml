@@ -20,6 +20,8 @@ environment:
       - wget
       - nodejs-24
       - npm
+      - python-3.13
+      - py3.13-pip
 
 subpackages:
   - name: skrapy-embed-minilm
@@ -84,6 +86,12 @@ pipeline:
       output: resolve-proxy
       ldflags: "-s -w"
 
+  - uses: go/build
+    with:
+      packages: ./cmd/api
+      output: skrapy-api
+      ldflags: "-s -w"
+
   - runs: |
       mkdir -p ${{targets.contextdir}}/usr/bin
       # Pinned Lightpanda release; bump alongside package.version (see update-packages.yml)
@@ -92,8 +100,12 @@ pipeline:
       cp entrypoint.sh ${{targets.contextdir}}/usr/bin/entrypoint.sh
       mkdir -p ${{targets.contextdir}}/opt/skrapy
       cp assets/blocklist.txt ${{targets.contextdir}}/opt/skrapy/blocklist.txt
+      # History plotters (termgraph/plotext/youplot); TUI bars stay zero-dep default.
+      pip install --quiet --target ${{targets.contextdir}}/opt/skrapy/pytools termgraph plotext youplot || \
+        echo "pip plotters unavailable; entrypoint retries at boot"
       cp /home/build/scripts/first-boot.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
       chmod +x ${{targets.contextdir}}/usr/bin/entrypoint.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
       if [ -f resolve-proxy ]; then install -m 0755 resolve-proxy ${{targets.contextdir}}/usr/bin/resolve-proxy; fi
+      if [ -f skrapy-api ]; then install -m 0755 skrapy-api ${{targets.contextdir}}/usr/bin/skrapy-api; fi
 
   - uses: strip

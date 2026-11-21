@@ -52,14 +52,45 @@ export OUTPUT="${OUTPUT:-results.jsonl}"
 export RECONCILED="${RECONCILED:-reconciled.jsonl}"
 export UPLOAD_URL="${UPLOAD_URL:-}"
 export API_KEY="${API_KEY:-}"
+export API_TOKEN="${API_TOKEN:-}"
 export BATCH_MB="${BATCH_MB:-50}"
+export RUN_CAP_MB="${RUN_CAP_MB:-1024}"
+export S3_BUCKET="${S3_BUCKET:-}"
+export S3_PREFIX="${S3_PREFIX:-}"
+export S3_ENDPOINT="${S3_ENDPOINT:-}"
+export BLOCKLIST="${BLOCKLIST:-/opt/skrapy/blocklist.txt}"
+export DEPTH="${DEPTH:-2}"
+export OBEY_ROBOTS="${OBEY_ROBOTS:-1}"
+export DEDUPE="${DEDUPE:-1}"
+export CONCURRENCY="${CONCURRENCY:-4}"
+export PROXY_MODE="${PROXY_MODE:-round-robin}"
+export PROXY_PICK="${PROXY_PICK:-0}"
 export LOOP="${LOOP:-0}"
 export COLLECT_INTERVAL="${COLLECT_INTERVAL:-${SCRAPE_INTERVAL:-1h}}"
 # (SCRAPE_INTERVAL kept as a legacy fallback; set COLLECT_INTERVAL going forward.)
 
+# Preflight: S3 uploader + history plotters (best-effort pip, bars stay default).
+if ! command -v s5cmd >/dev/null 2>&1 && ! command -v rclone >/dev/null 2>&1; then
+  echo "skrapy: WARNING: neither s5cmd nor rclone on PATH; S3 upload will fail" >&2
+fi
+if ! python3 -c "import plotext" 2>/dev/null; then
+  pip install --quiet --target /opt/skrapy/pytools termgraph plotext youplot 2>/dev/null || \
+    echo "skrapy: WARNING: pip plotters unavailable (offline?); use zero-dep bars" >&2
+fi
+case ":$PYTHONPATH:" in
+  *:/opt/skrapy/pytools:*) ;;
+  *) export PYTHONPATH="/opt/skrapy/pytools${PYTHONPATH:+:$PYTHONPATH}" ;;
+esac
+
 # Optional first-boot embed pack installer.
 if [ "${SKRAPY_FIRST_BOOT:-${GO_NEWSK_FIRST_BOOT:-0}}" = "1" ] && [ -x /usr/bin/skrapy-first-boot ]; then
   /usr/bin/skrapy-first-boot
+fi
+
+# Start token API alongside Lightpanda (single active job model).
+if [ -n "$API_TOKEN" ] && [ -x /usr/bin/skrapy-api ]; then
+  /usr/bin/skrapy-api &
+  API_PID=$!
 fi
 
 # Start Lightpanda with the proxy (if configured).
@@ -80,4 +111,5 @@ done
 /usr/bin/skrapy
 RC=$?
 kill $LP_PID 2>/dev/null || true
+if [ -n "${API_PID:-}" ]; then kill $API_PID 2>/dev/null || true; fi
 exit $RC

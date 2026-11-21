@@ -6,8 +6,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 ARCHS="${ARCHS:-x86_64,aarch64}"
-TAG="${TAG:-newsk:latest}"
-OUT="${OUT:-newsk.tar}"
+TAG="${TAG:-skrapy:latest}"
+OUT="${OUT:-skrapy.tar}"
 KEY="${KEY:-melange.rsa}"
 
 [ -f "$KEY" ] || melange keygen
@@ -19,6 +19,6 @@ echo "Built $OUT ($TAG)"
 # Push to GHCR (needs `podman login ghcr.io` with packages:write).
 if [ "${PUSH:-0}" = "1" ]; then
   podman load -i "$OUT"
-  podman push "$TAG" "ghcr.io/labsbytir/newsk:${TAG##*:}"
-  echo "Pushed ghcr.io/labsbytir/newsk:${TAG##*:}"
+  podman push "$TAG" "ghcr.io/labsbytir/skrapy:${TAG##*:}"
+  echo "Pushed ghcr.io/labsbytir/skrapy:${TAG##*:}"
 fi

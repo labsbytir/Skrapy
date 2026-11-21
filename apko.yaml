@@ -37,6 +37,8 @@ environment:
   RUN_CAP_MB: "1024"
   LOOP: "0"
   COLLECT_INTERVAL: 1h
+  PYTHONPATH: "/opt/skrapy/pytools"
+  BLOCKLIST: "/opt/skrapy/blocklist.txt"
 annotations:
   org.opencontainers.image.title: "Skrapy"
   org.opencontainers.image.description: "Skrapy crawl appliance - Lightpanda link discovery, 1000-link zip batches, S3 multipart upload by tir labs inc."

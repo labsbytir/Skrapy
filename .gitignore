@@ -8,3 +8,6 @@ results.jsonl
 sbom-*.spdx.json
 os/newsk.rsa
 .superpowers/
+melange.rsa
+packages/
+*.tar

@@ -70,6 +70,10 @@ func bearerOK(r *http.Request) bool {
 // JobsHandler serves POST /api/jobs and GET /api/jobs/{id} behind Bearer auth.
 func JobsHandler(store *JobStore) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
 	mux.HandleFunc("/api/jobs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || !bearerOK(r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
