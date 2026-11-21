@@ -2,7 +2,7 @@ package:
   name: skrapy
   version: 0.1.0
   epoch: 0
-  description: "GoNewsk: headless news collector with reconcile, batch upload, and embedding-ready output"
+  description: "Skrapy: headless crawl collector with link discovery, 1000-link zip batches, and S3 multipart upload"
   copyright:
     - license: MIT
 
@@ -23,7 +23,7 @@ environment:
 
 subpackages:
   - name: skrapy-embed-minilm
-    description: "GoNewsk + all-MiniLM-L6-v2 embeddings + pgvector (pglite-ready)"
+    description: "Skrapy + all-MiniLM-L6-v2 embeddings + pgvector (pglite-ready)"
     dependencies:
       runtime:
         - nodejs-24
@@ -39,7 +39,7 @@ subpackages:
           chmod +x ${{targets.contextdir}}/usr/bin/skrapy-install-embed-minilm
 
   - name: skrapy-embed-bge
-    description: "GoNewsk + BAAI/bge-small-en-v1.5 embeddings + pgvector (pglite-ready)"
+    description: "Skrapy + BAAI/bge-small-en-v1.5 embeddings + pgvector (pglite-ready)"
     dependencies:
       runtime:
         - nodejs-24
@@ -55,7 +55,7 @@ subpackages:
           chmod +x ${{targets.contextdir}}/usr/bin/skrapy-install-embed-bge
 
   - name: skrapy-embed-snowflake
-    description: "GoNewsk + Snowflake/snowflake-arctic-embed-m-v2.0 embeddings + pgvector (pglite-ready)"
+    description: "Skrapy + Snowflake/snowflake-arctic-embed-m-v2.0 embeddings + pgvector (pglite-ready)"
     dependencies:
       runtime:
         - nodejs-24
@@ -90,6 +90,8 @@ pipeline:
       wget -q https://github.com/lightpanda-io/browser/releases/download/1.0.4/lightpanda-${{build.arch}}-linux -O ${{targets.contextdir}}/usr/bin/lightpanda
       chmod +x ${{targets.contextdir}}/usr/bin/lightpanda
       cp entrypoint.sh ${{targets.contextdir}}/usr/bin/entrypoint.sh
+      mkdir -p ${{targets.contextdir}}/opt/skrapy
+      cp assets/blocklist.txt ${{targets.contextdir}}/opt/skrapy/blocklist.txt
       cp /home/build/scripts/first-boot.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
       chmod +x ${{targets.contextdir}}/usr/bin/entrypoint.sh ${{targets.contextdir}}/usr/bin/skrapy-first-boot
       if [ -f resolve-proxy ]; then install -m 0755 resolve-proxy ${{targets.contextdir}}/usr/bin/resolve-proxy; fi

@@ -1,0 +1,13 @@
+# Minimal ad/tracker blocklist (host suffixes, one per line, # comments).
+# Extended in Task 7 with EasyList-derived entries.
+doubleclick.net
+googlesyndication.com
+google-analytics.com
+googletagmanager.com
+facebook.net
+hotjar.com
+segment.io
+mixpanel.com
+criteo.com
+outbrain.com
+taboola.com
