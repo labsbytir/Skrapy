@@ -1,19 +1,26 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/labsbytir/Skrapy/internal/collector"
 	"github.com/labsbytir/Skrapy/internal/metrics"
 	"github.com/labsbytir/Skrapy/internal/proxy"
+	"github.com/labsbytir/Skrapy/internal/queue"
 	"github.com/labsbytir/Skrapy/internal/reconcile"
 	"github.com/labsbytir/Skrapy/internal/upload"
 )
@@ -31,6 +38,10 @@ type config struct {
 	brightData    bool
 	plain       bool
 	jsonMetrics bool
+	depth       int
+	obeyRobots  bool
+	dedupe      bool
+	concurrency int
 }
 
 func main() {
@@ -47,6 +58,10 @@ func main() {
 	flag.BoolVar(&cfg.brightData, "bright-data", envOr("BRIGHT_DATA", "") == "1", "Use Bright Data CDP URL builder")
 	flag.BoolVar(&cfg.plain, "plain", false, "Plain log output (no live dashboard)")
 	flag.BoolVar(&cfg.jsonMetrics, "json", false, "Machine-readable metric snapshots on stdout")
+	flag.IntVar(&cfg.depth, "depth", envOrInt("DEPTH", 2), "Link-follow depth (0 = seeds only)")
+	flag.BoolVar(&cfg.obeyRobots, "obey-robots", envOrBool("OBEY_ROBOTS", true), "Obey robots.txt Disallow")
+	flag.BoolVar(&cfg.dedupe, "dedupe", envOrBool("DEDUPE", true), "Dedupe URLs per job")
+	flag.IntVar(&cfg.concurrency, "concurrency", envOrInt("CONCURRENCY", 4), "Parallel fetch workers")
 	flag.Parse()
 
 	if cfg.brightData {
@@ -79,7 +94,7 @@ func main() {
 			defer d.Stop()
 		}
 		log.Printf("collecting %s -> %s", cfg.sourcesCSV, cfg.output)
-		if err := collectFile(ctx, cfg.cdpURL, cfg.sourcesCSV, cfg.output, m); err != nil {
+		if err := collectFile(ctx, cfg, cfg.output, m); err != nil {
 			return err
 		}
 
@@ -116,8 +131,8 @@ func main() {
 	}
 }
 
-func collectFile(parent context.Context, cdpURL, sourcesCSV, output string, m *metrics.Metrics) error {
-	f, err := os.Open(sourcesCSV)
+func collectFile(parent context.Context, cfg config, output string, m *metrics.Metrics) error {
+	f, err := os.Open(cfg.sourcesCSV)
 	if err != nil {
 		return err
 	}
@@ -125,6 +140,22 @@ func collectFile(parent context.Context, cdpURL, sourcesCSV, output string, m *m
 	r := csv.NewReader(f)
 	rows, err := r.ReadAll()
 	if err != nil {
+		return err
+	}
+
+	var seeds []string
+	for i, row := range rows {
+		if i == 0 || len(row) < 2 || row[1] == "" {
+			continue
+		}
+		seeds = append(seeds, row[1])
+	}
+
+	q, err := queue.Open(".skrapy-queue", cfg.dedupe)
+	if err != nil {
+		return err
+	}
+	if err := q.Enqueue(seeds, 0); err != nil {
 		return err
 	}
 
@@ -138,36 +169,90 @@ func collectFile(parent context.Context, cdpURL, sourcesCSV, output string, m *m
 	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
 
-	for i, row := range rows {
-		if i == 0 || len(row) < 2 || row[1] == "" {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		start := time.Now()
-		res, err := collector.Run(ctx, cdpURL, row[1])
-		ms := time.Since(start).Milliseconds()
-		if err != nil {
-			m.AddFail(row[1] + ": " + err.Error())
-			m.AddRow(metrics.Row{URL: row[1], Status: "fail", MS: ms})
-			log.Printf("err %s: %v", row[1], err)
-			continue
-		}
-		if err := enc.Encode(res); err != nil {
-			return err
-		}
-		status := "ok"
-		if ms > 10000 {
-			status = "slow"
-		}
-		m.AddRow(metrics.Row{URL: row[1], Status: status, MS: ms, Title: res.Title})
-		m.AddOK(int64(len(res.Text)))
-		m.Sample(1)
-		log.Printf("[%d/%d] %s", i, len(rows), res.Title)
+	var (
+		mu      sync.Mutex
+		encMu   sync.Mutex
+		hosts   = map[string][]string{} // host -> robots disallows
+		lastHit = map[string]time.Time{}
+		workers = cfg.concurrency
+	)
+	if workers < 1 {
+		workers = 1
 	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				mu.Lock()
+				it, ok := q.Next()
+				mu.Unlock()
+				if !ok {
+					return
+				}
+				if cfg.obeyRobots && robotsBlocked(hosts, it.URL) {
+					mu.Lock()
+					q.Dead(it.URL, "robots")
+					mu.Unlock()
+					m.AddFail(it.URL + ": robots disallowed")
+					m.AddRow(metrics.Row{URL: it.URL, Status: "robots"})
+					continue
+				}
+				throttle(lastHit, it.URL)
+				start := time.Now()
+				res, ferr := collector.Run(ctx, cfg.cdpURL, it.URL)
+				ms := time.Since(start).Milliseconds()
+				if ferr != nil {
+					mu.Lock()
+					q.Dead(it.URL, ferr.Error())
+					mu.Unlock()
+					m.AddFail(it.URL + ": " + ferr.Error())
+					m.AddRow(metrics.Row{URL: it.URL, Status: "fail", MS: ms})
+					log.Printf("err %s: %v", it.URL, ferr)
+					continue
+				}
+				encMu.Lock()
+				werr := enc.Encode(res)
+				encMu.Unlock()
+				if werr != nil {
+					log.Printf("encode err %s: %v", it.URL, werr)
+					continue
+				}
+				// Follow same-root links while under depth.
+				if it.Depth < cfg.depth {
+					var next []string
+					for _, l := range res.Links {
+						if abs := resolveLink(it.URL, l); abs != "" && sameRoot(it.URL, abs) {
+							next = append(next, abs)
+						}
+					}
+					mu.Lock()
+					_ = q.Enqueue(next, it.Depth+1)
+					q.Ack(it.URL)
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					q.Ack(it.URL)
+					mu.Unlock()
+				}
+				status := "ok"
+				if ms > 10000 {
+					status = "slow"
+				}
+				m.AddRow(metrics.Row{URL: it.URL, Status: status, MS: ms, Title: res.Title})
+				m.AddOK(int64(len(res.Text)))
+				m.Sample(1)
+				log.Printf("%s [%d]", res.Title, ms)
+			}
+		}()
+	}
+	wg.Wait()
 	return nil
 }
 
@@ -193,6 +278,129 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envOrInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envOrBool(k string, def bool) bool {
+	if v := os.Getenv(k); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes":
+			return true
+		case "0", "false", "no":
+			return false
+		}
+	}
+	return def
+}
+
+// rootHost returns the last two labels (example.com) for same-domain checks.
+func rootHost(h string) string {
+	parts := strings.Split(h, ".")
+	if len(parts) < 2 {
+		return h
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
+// sameRoot reports whether link shares the seed's root domain (subdomains in).
+func sameRoot(seedURL, link string) bool {
+	su, err := url.Parse(seedURL)
+	if err != nil {
+		return false
+	}
+	lu, err := url.Parse(link)
+	if err != nil || lu.Host == "" {
+		return false
+	}
+	return rootHost(su.Hostname()) == rootHost(lu.Hostname())
+}
+
+// resolveLink absolutizes href against base; "" when unusable.
+func resolveLink(base, href string) string {
+	if href == "" || strings.HasPrefix(href, "#") ||
+		strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "mailto:") {
+		return ""
+	}
+	bu, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	lu, err := bu.Parse(href)
+	if err != nil || (lu.Scheme != "http" && lu.Scheme != "https") {
+		return ""
+	}
+	lu.Fragment = ""
+	return lu.String()
+}
+
+var robotsHTTP = &http.Client{
+	Timeout:   10 * time.Second,
+	Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+}
+
+// robotsBlocked fetches and caches host robots.txt Disallow prefixes.
+func robotsBlocked(cache map[string][]string, rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if _, ok := cache[u.Host]; !ok {
+		cache[u.Host] = fetchDisallows(u.Scheme + "://" + u.Host + "/robots.txt")
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	for _, d := range cache[u.Host] {
+		if d != "" && strings.HasPrefix(path, d) {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchDisallows(robotsURL string) []string {
+	resp, err := robotsHTTP.Get(robotsURL)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+	var out []string
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if strings.HasPrefix(strings.ToLower(line), "disallow:") {
+			out = append(out, strings.TrimSpace(line[len("disallow:"):]))
+		}
+	}
+	return out
+}
+
+// throttle enforces ~1 rps per host.
+func throttle(last map[string]time.Time, rawURL string) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return
+	}
+	if d := time.Since(last[u.Host]); d < time.Second {
+		time.Sleep(time.Second - d)
+	}
+	last[u.Host] = time.Now()
 }
 
 func envOrDuration(k string, def time.Duration) time.Duration {
