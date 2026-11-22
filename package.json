@@ -1,0 +1,12 @@
+{
+  "name": "@labsbytir/skrapy",
+  "version": "0.1.1",
+  "description": "Skrapy headless crawl collector powered by Lightpanda",
+  "bin": { "skrapy": "bin/skrapy.js" },
+  "scripts": { "postinstall": "node scripts/install.js" },
+  "repository": { "type": "git", "url": "https://github.com/labsbytir/Skrapy.git" },
+  "license": "MIT",
+  "keywords": ["collector", "news", "lightpanda", "headless"],
+  "files": ["bin/", "scripts/install.js", "README.md", "LICENSE"],
+  "publishConfig": { "@labsbytir:registry": "https://npm.pkg.github.com" }
+}

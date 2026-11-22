@@ -1,0 +1,48 @@
+contents:
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  repositories:
+    - https://packages.wolfi.dev/os
+  packages:
+    - wolfi-base
+    - ca-certificates-bundle
+    - python-3.13
+    - py3.13-pip
+    - nodejs-24
+    - aws-cli-v2
+    - s5cmd
+    - rclone
+    - btop
+    - htop
+    - caddy
+    - skrapy
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+  run-as: nonroot
+
+entrypoint:
+  command: /usr/bin/entrypoint.sh
+
+environment:
+  LIGHTPANDA_CDP: "ws://127.0.0.1:9222/"
+  SOURCES_CSV: sources.csv
+  OUTPUT: results.jsonl
+  RECONCILED: reconciled.jsonl
+  BATCH_MB: "50"
+  RUN_CAP_MB: "1024"
+  LOOP: "0"
+  COLLECT_INTERVAL: 1h
+  PYTHONPATH: "/opt/skrapy/pytools"
+  BLOCKLIST: "/opt/skrapy/blocklist.txt"
+annotations:
+  org.opencontainers.image.title: "Skrapy"
+  org.opencontainers.image.description: "Skrapy crawl appliance - Lightpanda link discovery, 1000-link zip batches, S3 multipart upload by tir labs inc."
+  org.opencontainers.image.vendor: "tir labs inc."
+  org.opencontainers.image.url: "https://github.com/labsbytir/Skrapy"
+  org.opencontainers.image.licenses: MIT

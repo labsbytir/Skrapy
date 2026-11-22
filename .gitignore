@@ -1,0 +1,13 @@
+packages/
+*.tar
+melange.rsa
+gonewsk
+gonewsk-linux-amd64
+results.jsonl
+/vendor/
+sbom-*.spdx.json
+os/newsk.rsa
+.superpowers/
+melange.rsa
+packages/
+*.tar

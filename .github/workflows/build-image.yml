@@ -1,0 +1,27 @@
+name: Build Wolfi image (self-hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (e.g. skrapy:v0.1.0)"
+        required: true
+        default: "skrapy:latest"
+
+# Runs ONLY on a self-hosted runner with podman + melange + apko installed.
+# GitHub-hosted runners cannot run melange builds (no privileged containers).
+jobs:
+  image:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: ./scripts/build-image.sh
+        env:
+          TAG: ${{ inputs.tag }}
+      - name: Upload image tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: skrapy-image
+          path: skrapy.tar
+          retention-days: 7

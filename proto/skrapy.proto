@@ -1,0 +1,10 @@
+syntax = "proto3";
+package skrapy.v1;
+
+service NewsService {
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+}
+
+message ListItemsRequest { repeated string fields = 1; }
+message ListItemsResponse { repeated Item items = 1; }
+message Item { string id = 1; string title = 2; string url = 3; string text = 4; }
