@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ProgressFunc receives upload percent (0-100); done is true on completion.
@@ -24,6 +25,11 @@ type Store struct {
 	Bucket   string
 	Prefix   string
 	Endpoint string
+	// LastTool names the uploader used by the most recent attempt.
+	LastTool string
+	// Retries caps attempts per tool (default 3); Backoff slots sleep seconds.
+	Retries int
+	Backoff []int
 }
 
 // FromEnv builds a Store from S3_BUCKET (required), S3_PREFIX, S3_ENDPOINT.
@@ -85,12 +91,21 @@ func run(ctx context.Context, name string, args []string, cb ProgressFunc) error
 	return nil
 }
 
-// UploadZip uploads zipPath, trying s5cmd first then rclone.
+// UploadZip uploads zipPath, trying s5cmd first then rclone, each with
+// retries and backoff. On total failure both errors are joined.
 func (s *Store) UploadZip(ctx context.Context, zipPath string, cb ProgressFunc) error {
 	dst := "s3://" + s.Bucket + "/" + s.Key(zipPath)
 	rcloneArgs := []string{"copyto", zipPath, ":s3:" + s.Bucket + "/" + s.Key(zipPath), "--progress"}
 	if s.Endpoint != "" {
 		rcloneArgs = append(rcloneArgs, "--s3-endpoint", s.Endpoint)
+	}
+	retries := s.Retries
+	if retries < 1 {
+		retries = 3
+	}
+	backoff := s.Backoff
+	if len(backoff) == 0 {
+		backoff = []int{1, 2, 4}
 	}
 	if _, err := exec.LookPath("s5cmd"); err == nil {
 		args := []string{}
@@ -98,19 +113,45 @@ func (s *Store) UploadZip(ctx context.Context, zipPath string, cb ProgressFunc) 
 			args = append(args, "--endpoint-url", s.Endpoint)
 		}
 		args = append(args, "cp", zipPath, dst)
-		if err := run(ctx, "s5cmd", args, cb); err == nil {
+		s.LastTool = "s5cmd"
+		if err := retry(ctx, retries, backoff, func() error { return run(ctx, "s5cmd", args, cb) }); err == nil {
 			return nil
 		} else if _, err2 := exec.LookPath("rclone"); err2 == nil {
-			if err2 := run(ctx, "rclone", rcloneArgs, cb); err2 == nil {
+			s.LastTool = "rclone"
+			if err3 := retry(ctx, retries, backoff, func() error { return run(ctx, "rclone", rcloneArgs, cb) }); err3 == nil {
 				return nil
+			} else {
+				return fmt.Errorf("s3store: s5cmd: %v; rclone: %v", err, err3)
 			}
-			return err
 		} else {
 			return err
 		}
 	}
 	if _, err := exec.LookPath("rclone"); err == nil {
-		return run(ctx, "rclone", rcloneArgs, cb)
+		s.LastTool = "rclone"
+		return retry(ctx, retries, backoff, func() error { return run(ctx, "rclone", rcloneArgs, cb) })
 	}
 	return errors.New("s3store: neither s5cmd nor rclone on PATH")
+}
+
+// retry runs fn up to n times, sleeping backoff slots (seconds) between tries.
+func retry(ctx context.Context, n int, backoff []int, fn func() error) error {
+	var err error
+	for i := 0; i < n; i++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if i < n-1 {
+			secs := 1
+			if i < len(backoff) {
+				secs = backoff[i]
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(secs) * time.Second):
+			}
+		}
+	}
+	return err
 }

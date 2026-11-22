@@ -290,6 +290,9 @@ func (t *TUI) frame() string {
 		paused = theme(" ⏸ PAUSED", Fuchsia)
 	}
 	foot := " ? Help  r Refresh  / Filter  s Sort  p Pause  b btop  g series  q Quit" + paused
+	if s.Notice != "" {
+		foot = " ! " + s.Notice
+	}
 	if t.entering {
 		foot = " / Filter: " + t.fbuf + "█  (Enter applies, Esc cancels)"
 	} else if t.filter != "" {

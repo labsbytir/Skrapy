@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -23,8 +24,12 @@ import (
 	"github.com/labsbytir/Skrapy/internal/proxy"
 	"github.com/labsbytir/Skrapy/internal/queue"
 	"github.com/labsbytir/Skrapy/internal/reconcile"
+	"github.com/labsbytir/Skrapy/internal/s3store"
 	"github.com/labsbytir/Skrapy/internal/upload"
 )
+
+// errRunCapExceeded stops the run when RUN_CAP_MB is hit; resume on next run.
+var errRunCapExceeded = errors.New("skrapy: RUN_CAP_MB exceeded")
 
 type config struct {
 	cdpURL        string
@@ -96,6 +101,11 @@ func main() {
 		}
 		log.Printf("collecting %s -> %s", cfg.sourcesCSV, cfg.output)
 		if err := collectFile(ctx, cfg, cfg.output, m); err != nil {
+			if errors.Is(err, errRunCapExceeded) {
+				m.SetNotice("RUN_CAP_MB reached — resume frees space after upload")
+				log.Printf("cap hit, stopping run (resume-safe)")
+				return nil
+			}
 			return err
 		}
 
@@ -105,7 +115,13 @@ func main() {
 		}
 		log.Printf("reconciled %d/%d -> %s", kept, total, cfg.reconciled)
 
-		if cfg.uploadURL != "" && cfg.apiKey != "" {
+		if os.Getenv("S3_BUCKET") != "" {
+			m.SetStorage(dirBytes(".skrapy-queue", cfg.output, batchDir(cfg.reconciled)), int64(envOrInt("RUN_CAP_MB", 1024))*1024*1024)
+			if err := uploadBatches(cfg.reconciled, m); err != nil {
+				return err
+			}
+			os.Remove(cfg.output)
+		} else if cfg.uploadURL != "" && cfg.apiKey != "" {
 			if err := uploadReconciled(cfg.uploadURL, cfg.apiKey, cfg.reconciled, cfg.batchMB); err != nil {
 				return err
 			}
@@ -160,7 +176,7 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 		return err
 	}
 
-	out, err := os.Create(output)
+	out, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -173,10 +189,12 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 	var (
 		mu      sync.Mutex
 		encMu   sync.Mutex
+		netMu   sync.Mutex // guards hosts + lastHit across workers
 		hosts   = map[string][]string{} // host -> robots disallows
 		lastHit = map[string]time.Time{}
 		workers = cfg.concurrency
 		pages   int
+		capHit  error
 	)
 	if workers < 1 {
 		workers = 1
@@ -206,7 +224,10 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 				if !ok {
 					return
 				}
-				if cfg.obeyRobots && robotsBlocked(hosts, it.URL) {
+				netMu.Lock()
+				blocked := cfg.obeyRobots && robotsBlocked(hosts, it.URL)
+				netMu.Unlock()
+				if blocked {
 					mu.Lock()
 					q.Dead(it.URL, "robots")
 					mu.Unlock()
@@ -214,7 +235,9 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 					m.AddRow(metrics.Row{URL: it.URL, Status: "robots"})
 					continue
 				}
+				netMu.Lock()
 				throttle(lastHit, it.URL)
+				netMu.Unlock()
 				start := time.Now()
 				res, ferr := collector.Run(ctx, cfg.cdpURL, it.URL)
 				ms := time.Since(start).Milliseconds()
@@ -261,10 +284,13 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 				mu.Lock()
 				pages++
 				if pages%50 == 0 {
-					m.SetStorage(dirBytes(".skrapy-queue", output), runCap)
-					if runCap > 0 && dirBytes(".skrapy-queue", output) > runCap {
+					m.SetStorage(dirBytes(".skrapy-queue", output, batchDir(output)), runCap)
+					if runCap > 0 && dirBytes(".skrapy-queue", output, batchDir(output)) > runCap {
 						mu.Unlock()
 						log.Printf("RUN_CAP_MB reached, stopping (resume on next run)")
+						mu.Lock()
+						capHit = errRunCapExceeded
+						mu.Unlock()
 						cancel()
 						return
 					}
@@ -275,10 +301,49 @@ func collectFile(parent context.Context, cfg config, output string, m *metrics.M
 		}()
 	}
 	wg.Wait()
-	return nil
+	mu.Lock()
+	defer mu.Unlock()
+	return capHit
 }
 
-// dirBytes sums the sizes of paths (queue dir + outputs) for storage bar/cap.
+// batchDir holds per-run batch chunks + zips for an output file.
+func batchDir(output string) string {
+	return strings.TrimSuffix(output, ".jsonl") + ".batches"
+}
+
+// uploadBatches splits output into 1,000-link chunks, zips each, uploads via
+// S3 with progress, and deletes local artifacts only after a clean upload.
+// Fetch keeps running during other batches: this runs after the crawl pass
+// while the queue stays open for the next run.
+func uploadBatches(output string, m *metrics.Metrics) error {
+	st, err := s3store.FromEnv()
+	if err != nil {
+		return err
+	}
+	jobID := "job-" + time.Now().UTC().Format("20060102-150405")
+	chunks, err := upload.SplitByCount(output, batchDir(output), 1000)
+	if err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		zp, err := upload.ZipBatch(batchDir(output), jobID, c.Index)
+		if err != nil {
+			return err
+		}
+		m.SetS3(0, "s5cmd")
+		zerr := st.UploadZip(context.Background(), zp, func(p float64, done bool) {
+			m.SetS3(p, st.LastTool)
+		})
+		m.SetS3(100, st.LastTool)
+		if zerr != nil {
+			return zerr
+		}
+		os.Remove(c.Path)
+		os.Remove(zp)
+	}
+	os.Remove(output)
+	return nil
+}
 func dirBytes(paths ...string) int64 {
 	var total int64
 	for _, p := range paths {
@@ -411,6 +476,8 @@ func robotsBlocked(cache map[string][]string, rawURL string) bool {
 	return false
 }
 
+// fetchDisallows honors User-agent scoping: only the "*" group (plus
+// rules before any User-agent line) applies to Skrapy.
 func fetchDisallows(robotsURL string) []string {
 	resp, err := robotsHTTP.Get(robotsURL)
 	if err != nil || resp.StatusCode != 200 {
@@ -421,6 +488,7 @@ func fetchDisallows(robotsURL string) []string {
 	}
 	defer resp.Body.Close()
 	var out []string
+	inScope := true // rules before any User-agent line apply globally
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -428,7 +496,14 @@ func fetchDisallows(robotsURL string) []string {
 		if i := strings.Index(line, "#"); i >= 0 {
 			line = strings.TrimSpace(line[:i])
 		}
-		if strings.HasPrefix(strings.ToLower(line), "disallow:") {
+		if line == "" {
+			continue
+		}
+		if ua, ok := strings.CutPrefix(strings.ToLower(line), "user-agent:"); ok {
+			inScope = strings.TrimSpace(ua) == "*"
+			continue
+		}
+		if inScope && strings.HasPrefix(strings.ToLower(line), "disallow:") {
 			out = append(out, strings.TrimSpace(line[len("disallow:"):]))
 		}
 	}

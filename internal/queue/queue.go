@@ -16,17 +16,19 @@ type Item struct {
 
 // Queue is a durable FIFO. Not safe for concurrent use; guard with a mutex.
 type Queue struct {
-	dir    string
-	dedupe bool
-	pending []Item
-	done    map[string]bool
-	dead    map[string]string
+	dir      string
+	dedupe   bool
+	pending  []Item
+	inflight map[string]Item
+	done     map[string]bool
+	dead     map[string]string
 }
 
 type state struct {
-	Pending []Item           `json:"pending"`
-	Done    map[string]bool  `json:"done"`
-	Dead    map[string]string `json:"dead"`
+	Pending  []Item            `json:"pending"`
+	InFlight map[string]Item   `json:"inflight"`
+	Done     map[string]bool   `json:"done"`
+	Dead     map[string]string `json:"dead"`
 }
 
 // Open loads dir/state.json (or starts empty) with dedupe on/off.
@@ -34,7 +36,7 @@ func Open(dir string, dedupe bool) (*Queue, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	q := &Queue{dir: dir, dedupe: dedupe, done: map[string]bool{}, dead: map[string]string{}}
+	q := &Queue{dir: dir, dedupe: dedupe, inflight: map[string]Item{}, done: map[string]bool{}, dead: map[string]string{}}
 	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -47,6 +49,13 @@ func Open(dir string, dedupe bool) (*Queue, error) {
 		return nil, err
 	}
 	q.pending = st.Pending
+	// Crash recovery: in-flight items go back to the head of pending.
+	for _, it := range st.InFlight {
+		if q.dedupe && (q.done[it.URL]) {
+			continue
+		}
+		q.pending = append([]Item{it}, q.pending...)
+	}
 	if st.Done != nil {
 		q.done = st.Done
 	}
@@ -57,7 +66,7 @@ func Open(dir string, dedupe bool) (*Queue, error) {
 }
 
 func (q *Queue) save() error {
-	st := state{Pending: q.pending, Done: q.done, Dead: q.dead}
+	st := state{Pending: q.pending, InFlight: q.inflight, Done: q.done, Dead: q.dead}
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err
@@ -88,25 +97,28 @@ func (q *Queue) Enqueue(urls []string, depth int) error {
 	return q.save()
 }
 
-// Next pops the head item. ok=false when empty.
+// Next pops the head item, tracking it in-flight until Ack/Dead.
 func (q *Queue) Next() (it Item, ok bool) {
 	if len(q.pending) == 0 {
 		return Item{}, false
 	}
 	it = q.pending[0]
 	q.pending = q.pending[1:]
+	q.inflight[it.URL] = it
 	_ = q.save()
 	return it, true
 }
 
 // Ack marks url done.
 func (q *Queue) Ack(url string) {
+	delete(q.inflight, url)
 	q.done[url] = true
 	_ = q.save()
 }
 
 // Dead records url with a failure reason after retries are exhausted.
 func (q *Queue) Dead(url, reason string) {
+	delete(q.inflight, url)
 	q.dead[url] = reason
 	_ = q.save()
 }

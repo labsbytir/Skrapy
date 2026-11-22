@@ -87,6 +87,7 @@ func SplitByCount(inPath, dir string, n int) ([]Chunk, error) {
 }
 
 // ZipBatch zips one batch chunk as <jobID>-batch-<NNNN>.zip (single entry).
+// Partial zips are removed on any failure.
 func ZipBatch(dir, jobID string, index int) (string, error) {
 	src := filepath.Join(dir, fmt.Sprintf("batch-%04d.jsonl", index))
 	dst := filepath.Join(dir, fmt.Sprintf("%s-batch-%04d.zip", jobID, index))
@@ -94,37 +95,36 @@ func ZipBatch(dir, jobID string, index int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	fail := func(err error) (string, error) {
+		zf.Close()
+		os.Remove(dst)
+		return "", err
+	}
 	zw := zip.NewWriter(zf)
 	sf, err := os.Open(src)
 	if err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	defer sf.Close()
 	fi, err := sf.Stat()
 	if err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	hdr, err := zip.FileInfoHeader(fi)
 	if err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	hdr.Name = filepath.Base(src)
 	hdr.Method = zip.Deflate
 	w, err := zw.CreateHeader(hdr)
 	if err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	if _, err := io.Copy(w, sf); err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	if err := zw.Close(); err != nil {
-		zf.Close()
-		return "", err
+		return fail(err)
 	}
 	return dst, zf.Close()
 }

@@ -28,6 +28,8 @@ type Counters struct {
 	S3Pct       float64
 	S3Tool      string
 	Paused      bool
+	// Notice is a one-line banner for the TUI footer (cap hit, S3 outage).
+	Notice string
 }
 
 // Row is one dashboard table entry.
@@ -113,6 +115,13 @@ func (m *Metrics) Paused() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.c.Paused
+}
+
+// SetNotice sets the TUI footer banner.
+func (m *Metrics) SetNotice(s string) {
+	m.mu.Lock()
+	m.c.Notice = s
+	m.mu.Unlock()
 }
 
 // DumpSeries writes spark samples as TSV for piping to termgraph/uplot/plotext.

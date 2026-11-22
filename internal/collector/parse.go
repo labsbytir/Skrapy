@@ -22,6 +22,51 @@ type Form struct {
 
 // ParseDocument extracts the maximal AI record from a fetched HTML page.
 // Missing elements stay zero-valued (empty title when absent, not an error).
+func textOf(n *html.Node) string {
+	var b strings.Builder
+	var inner func(*html.Node)
+	inner = func(c *html.Node) {
+		if c.Type == html.TextNode {
+			b.WriteString(c.Data)
+		}
+		for k := c.FirstChild; k != nil; k = k.NextSibling {
+			inner(k)
+		}
+	}
+	inner(n)
+	return strings.TrimSpace(b.String())
+}
+
+// selectedOption returns the selected option value (first option fallback).
+func selectedOption(sel *html.Node) string {
+	fallback := ""
+	for c := sel.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.ElementNode || c.Data != "option" {
+			continue
+		}
+		v := ""
+		selected := false
+		for _, a := range c.Attr {
+			if a.Key == "value" {
+				v = a.Val
+			}
+			if a.Key == "selected" {
+				selected = true
+			}
+		}
+		if v == "" {
+			v = textOf(c)
+		}
+		if fallback == "" {
+			fallback = v
+		}
+		if selected {
+			return v
+		}
+	}
+	return fallback
+}
+
 func ParseDocument(url, finalURL string, status int, htmlDoc string) Result {
 	res := Result{URL: url, FinalURL: finalURL, Status: status, Fetched: time.Now()}
 	doc, err := html.Parse(strings.NewReader(htmlDoc))
@@ -32,20 +77,6 @@ func ParseDocument(url, finalURL string, status int, htmlDoc string) Result {
 	res.Meta = map[string]string{}
 	var text strings.Builder
 	var walk func(*html.Node, bool)
-	textOf := func(n *html.Node) string {
-		var b strings.Builder
-		var inner func(*html.Node)
-		inner = func(c *html.Node) {
-			if c.Type == html.TextNode {
-				b.WriteString(c.Data)
-			}
-			for k := c.FirstChild; k != nil; k = k.NextSibling {
-				inner(k)
-			}
-		}
-		inner(n)
-		return strings.TrimSpace(b.String())
-	}
 	walk = func(n *html.Node, inBody bool) {
 		if n.Type == html.ElementNode {
 			switch n.Data {
@@ -79,6 +110,9 @@ func ParseDocument(url, finalURL string, status int, htmlDoc string) Result {
 			case "script":
 				for _, a := range n.Attr {
 					if a.Key == "type" && a.Val == "application/ld+json" {
+						if res.JSONLD != "" {
+							res.JSONLD += "\n"
+						}
 						res.JSONLD += textOf(n)
 					}
 				}
@@ -106,8 +140,17 @@ func ParseDocument(url, finalURL string, status int, htmlDoc string) Result {
 						if in.Type == "" && c.Data == "input" {
 							in.Type = "text"
 						}
-						if in.Value == "" && c.Data == "button" {
-							return // button text already in page Text
+						switch c.Data {
+						case "textarea":
+							in.Type = "textarea"
+							if v := textOf(c); v != "" {
+								in.Value = v
+							}
+						case "select":
+							in.Type = "select"
+							in.Value = selectedOption(c)
+						case "button", "option":
+							return // button text in page Text; options via select
 						}
 						if in.Name == "" && in.Value == "" {
 							return
@@ -126,7 +169,17 @@ func ParseDocument(url, finalURL string, status int, htmlDoc string) Result {
 		}
 		if n.Type == html.TextNode && inBody {
 			if t := strings.TrimSpace(n.Data); t != "" {
-				text.WriteString(t + " ")
+				// Skip inline code and styles; they are not page copy.
+				for p := n.Parent; p != nil; p = p.Parent {
+					if p.Type == html.ElementNode &&
+						(p.Data == "script" || p.Data == "style" || p.Data == "noscript") {
+						t = ""
+						break
+					}
+				}
+				if t != "" {
+					text.WriteString(t + " ")
+				}
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {

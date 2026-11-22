@@ -3,7 +3,7 @@
 # Asserts runtime packages, Lightpanda pin, and OCI annotations.
 set -e
 fail=0
-need_apko="wolfi-base ca-certificates-bundle python-3.13 py3.13-pip nodejs-24 aws-cli-v2 s5cmd rclone btop htop skrapy"
+need_apko="wolfi-base ca-certificates-bundle python-3.13 py3.13-pip nodejs-24 aws-cli-v2 s5cmd rclone btop htop caddy skrapy"
 for p in $need_apko; do
   grep -q "^\s*-\s*$p\s*$" apko.yaml || { echo "MISSING apko package: $p"; fail=1; }
 done

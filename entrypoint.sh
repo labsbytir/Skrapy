@@ -93,6 +93,27 @@ if [ -n "$API_TOKEN" ] && [ -x /usr/bin/skrapy-api ]; then
   API_PID=$!
 fi
 
+# TLS via Caddy (public access): DOMAIN enables Automatic HTTPS (needs
+# :80/:443, i.e. --cap-add=NET_BIND_SERVICE or root); TLS_CERT/TLS_KEY
+# serve bring-your-own cert on :8443 (nonroot-safe, map host 443->8443).
+# Neither set: plain HTTP on :8080 (dev).
+export DOMAIN="${DOMAIN:-}"
+export ACME_EMAIL="${ACME_EMAIL:-}"
+export TLS_CERT="${TLS_CERT:-}"
+export TLS_KEY="${TLS_KEY:-}"
+if { [ -n "$DOMAIN" ] || { [ -n "$TLS_CERT" ] && [ -n "$TLS_KEY" ]; }; } && command -v caddy >/dev/null 2>&1; then
+  {
+    if [ -n "$TLS_CERT" ]; then
+      printf ':8443 {\n\ttls %s %s\n\treverse_proxy 127.0.0.1:8080\n}\n' "$TLS_CERT" "$TLS_KEY"
+    else
+      printf '%s {\n\treverse_proxy 127.0.0.1:8080\n}\n' "$DOMAIN"
+    fi
+    [ -n "$ACME_EMAIL" ] && printf '{\n\temail %s\n}\n' "$ACME_EMAIL"
+  } > /tmp/Caddyfile
+  caddy run --config /tmp/Caddyfile --adapter caddyfile &
+  CADDY_PID=$!
+fi
+
 # Start Lightpanda with the proxy (if configured).
 ARGS="--host 0.0.0.0 --advertise-host "${ADVERTISE_HOST:-127.0.0.1}" --port 9222"
 if [ -n "$PX" ]; then
@@ -112,4 +133,5 @@ done
 RC=$?
 kill $LP_PID 2>/dev/null || true
 if [ -n "${API_PID:-}" ]; then kill $API_PID 2>/dev/null || true; fi
+if [ -n "${CADDY_PID:-}" ]; then kill $CADDY_PID 2>/dev/null || true; fi
 exit $RC
